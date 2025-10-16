@@ -41,7 +41,7 @@ def start_simple_server():
         print(f"❌ Ошибка веб-сервера: {e}")
 
 
-# База данных
+# База данных с поддержкой медиа
 def init_db():
     conn = sqlite3.connect('posts.db', check_same_thread=False)
     cursor = conn.cursor()
@@ -55,6 +55,43 @@ def init_db():
             status TEXT DEFAULT 'scheduled'
         )
     ''')
+    conn.commit()
+    conn.close()
+
+
+def update_db_structure():
+    """Обновляет структуру базы данных для поддержки медиа"""
+    conn = sqlite3.connect('posts.db', check_same_thread=False)
+    cursor = conn.cursor()
+
+    # Проверяем есть ли колонка media_type
+    cursor.execute("PRAGMA table_info(posts)")
+    columns = [column[1] for column in cursor.fetchall()]
+
+    if 'media_type' not in columns:
+        print("🔄 Обновляем структуру базы данных...")
+        # Создаем временную таблицу с новой структурой
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS posts_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT,
+                media_type TEXT,
+                media_file_id TEXT,
+                time DATETIME NOT NULL,
+                status TEXT DEFAULT 'scheduled'
+            )
+        ''')
+
+        # Копируем данные из старой таблицы
+        cursor.execute(
+            'INSERT INTO posts_new (id, text, time, status) SELECT id, text, time, status FROM posts'
+        )
+
+        # Удаляем старую таблицу и переименовываем новую
+        cursor.execute('DROP TABLE posts')
+        cursor.execute('ALTER TABLE posts_new RENAME TO posts')
+        print("✅ База данных обновлена!")
+
     conn.commit()
     conn.close()
 
@@ -129,31 +166,39 @@ def start_scheduler():
 
     def check_posts():
         while True:
-            conn = sqlite3.connect('posts.db')
-            cursor = conn.cursor()
-            cursor.execute(
-                'SELECT id, text, media_type, media_file_id FROM posts WHERE status = "scheduled" AND time <= ?',
-                (datetime.now(), ))
+            try:
+                conn = sqlite3.connect('posts.db')
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT id, text, media_type, media_file_id FROM posts WHERE status = "scheduled" AND time <= ?',
+                    (datetime.now(), ))
 
-            for post_id, text, media_type, media_file_id in cursor.fetchall():
-                try:
-                    if media_type == 'photo':
-                        bot.send_photo(CHANNEL_ID, media_file_id, caption=text)
-                    elif media_type == 'video':
-                        bot.send_video(CHANNEL_ID, media_file_id, caption=text)
-                    else:
-                        bot.send_message(CHANNEL_ID, text)
+                for post_id, text, media_type, media_file_id in cursor.fetchall(
+                ):
+                    try:
+                        if media_type == 'photo':
+                            bot.send_photo(CHANNEL_ID,
+                                           media_file_id,
+                                           caption=text)
+                        elif media_type == 'video':
+                            bot.send_video(CHANNEL_ID,
+                                           media_file_id,
+                                           caption=text)
+                        else:
+                            bot.send_message(CHANNEL_ID, text)
 
-                    cursor.execute(
-                        'UPDATE posts SET status = "sent" WHERE id = ?',
-                        (post_id, ))
-                    conn.commit()
-                    bot.send_message(ADMIN_ID,
-                                     f'✅ Пост #{post_id} опубликован!')
-                except Exception as e:
-                    print(f'Ошибка публикации: {e}')
+                        cursor.execute(
+                            'UPDATE posts SET status = "sent" WHERE id = ?',
+                            (post_id, ))
+                        conn.commit()
+                        bot.send_message(ADMIN_ID,
+                                         f'✅ Пост #{post_id} опубликован!')
+                    except Exception as e:
+                        print(f'Ошибка публикации: {e}')
 
-            conn.close()
+                conn.close()
+            except Exception as e:
+                print(f'Ошибка scheduler: {e}')
             time.sleep(30)
 
     thread = threading.Thread(target=check_posts, daemon=True)
@@ -244,10 +289,11 @@ def handle_text(message):
         posts = get_posts()
         scheduled = len([p for p in posts if p[5] == 'scheduled'])
         sent = len([p for p in posts if p[5] == 'sent'])
+        media_posts = len([p for p in posts if p[2] in ['photo', 'video']])
 
         bot.send_message(
             message.chat.id,
-            f'📊 *Статистика*\n\n• Всего постов: {len(posts)}\n• Ожидают: {scheduled}\n• Опубликовано: {sent}',
+            f'📊 *Статистика*\n\n• Всего постов: {len(posts)}\n• Ожидают: {scheduled}\n• Опубликовано: {sent}\n• Медиа-постов: {media_posts}',
             parse_mode='Markdown',
             reply_markup=main_menu())
 
@@ -263,9 +309,12 @@ def handle_text(message):
         for post in posts:
             time_str = datetime.strptime(
                 post[4], '%Y-%m-%d %H:%M:%S').strftime('%d.%m %H:%M')
+            media_icon = "📷" if post[
+                2] == 'photo' else "🎥" if post[2] == 'video' else "📝"
             markup.add(
-                types.InlineKeyboardButton(f'❌ #{post[0]} - {time_str}',
-                                           callback_data=f'delete_{post[0]}'))
+                types.InlineKeyboardButton(
+                    f'{media_icon} #{post[0]} - {time_str}',
+                    callback_data=f'delete_{post[0]}'))
 
         bot.send_message(message.chat.id,
                          '🗑 Выберите пост для удаления:',
@@ -382,6 +431,7 @@ if __name__ == "__main__":
         print(f"❌ Ошибка веб-сервера: {e}")
 
     init_db()
+    update_db_structure()
     start_scheduler()
 
     print("✅ Бот инициализирован!")
