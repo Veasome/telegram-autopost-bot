@@ -1,0 +1,10 @@
+﻿[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python bot.py"
+
+[[services]]
+name = "bot"
+[[services.ports]]
+port = 8080
