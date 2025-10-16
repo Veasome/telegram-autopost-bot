@@ -27,3 +27,7 @@ outputType = "console"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "pip install -r requirements.txt && python bot.py"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
